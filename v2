@@ -1,153 +1,236 @@
-function start() {
-  // Log a message in the Apps Script's logger (for debugging purposes)
-  Logger.log('Optimized JavierCane Code with Drive API, Batching, and Error Handling');
+// File: Code.gs
 
-  // Set the mode of operation:
-  // 1 - Log all files/folders (no filter)
-  // 2 - Filter for specific emails with editor permission
-  // 3 - Filter for specific emails with viewer permission
-  const mode = 1; // Change this value to switch modes
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('File Audit')
+    .addItem('Run File Audit', 'showAuditDialog')
+    .addToUi();
+}
 
-  // Get the active sheet (where the data will be written)
-  const sheet = SpreadsheetApp.getActiveSheet();
+function showAuditDialog() {
+  const html = HtmlService.createHtmlOutput(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <base target="_top">
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+        <script>
+          function runAudit() {
+            const form = document.getElementById('auditForm');
+            const formData = new FormData(form);
+            document.getElementById('progressBar').style.display = 'block';
+            google.script.run
+              .withSuccessHandler(function(result) {
+                M.toast({html: 'Audit complete! New tab created: ' + result.sheetName});
+              })
+              .withFailureHandler(function(error) {
+                M.toast({html: 'Error: ' + error.message, classes: 'red'});
+              })
+              .withUserObject(form)
+              .auditDriveFiles(Object.fromEntries(formData));
+          }
 
-  // Append the header row with column names to the sheet
-  sheet.appendRow(["File Name", "Parent Folder", "Sharing Access", "Sharing Permission", "Editors", "Viewers", "URL"]);
+          function updateProgressBar(percent) {
+            const fill = document.getElementById('progressBarFill');
+            fill.style.width = percent + '%';
+            fill.innerHTML = percent + '%';
+          }
 
-  // Retrieve the folder using its ID from Google Drive
-  const folderId = "1-ohSBl-HsxlfW6JQ9N-TWH40pxFarCZ2";
-  const folderName = getFolderName(folderId);
+          setInterval(function() {
+            google.script.run.withSuccessHandler(updateProgressBar).manageProgress('get');
+          }, 1000);
+        </script>
+      </head>
+      <body>
+        <div class="container">
+          
+          <form id="auditForm" class="col s12">
+            <div class="input-field">
+              <input type="text" id="folderId" name="folderId" required>
+              <label for="folderId">Root Folder ID</label>
+            </div>
+            <p>Audit Mode:</p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="all" checked/>
+                <span>List all files</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="editors"/>
+                <span>Filter for specific editors</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="viewers"/>
+                <span>Filter for specific viewers</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="owners"/>
+                <span>Filter for specific owners</span>
+              </label>
+            </p>
+            <div class="input-field">
+              <textarea name="emails" class="materialize-textarea" rows="3" cols="40"></textarea>
+              <label>Email addresses (comma-separated, for filtering)</label>
+            </div>
+            <p>
+              <label>
+                <input type="checkbox" name="removePermissions" value="true"/>
+                <span>Remove permissions for listed emails</span>
+              </label>
+            </p>
+            <div class="center-align">
+              <a class="waves-effect waves-light btn" onclick="runAudit()">Run Audit</a>
+            </div>
+          </form>
+          <div id="progressBar" class="progress" style="display:none;">
+            <div id="progressBarFill" class="determinate" style="width: 0%;">0%</div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `).setWidth(400).setHeight(600);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'File Options');
+}
 
-  // Create an array to hold the data before writing to the sheet
-  const data = [];
 
-  // Call the recursive function to list files and subfolders starting with this folder
-  recursiveListSharedFiles(folderId, folderName, data, mode);
-
-  // Write any remaining data to the sheet if there are leftover records
-  if (data.length > 0) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, data.length, data[0].length).setValues(data);
+function manageProgress(action, value) {
+  const props = PropertiesService.getScriptProperties();
+  if (action === 'get') {
+    return Number(props.getProperty('auditProgress') || 0);
+  } else if (action === 'set') {
+    props.setProperty('auditProgress', value.toString());
+  } else if (action === 'clear') {
+    props.deleteProperty('auditProgress');
   }
 }
 
-function recursiveListSharedFiles(folderId, folderName, data, mode) {
-  // List shared files in the current folder and write data to the array
-  listSharedFiles(folderId, folderName, data, mode);
-
-  // Get any subfolders within the current folder using the Drive API
-  const subfolders = Drive.Files.list({
-    q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder'`,
-    fields: "files(id, name)" // Adjusted to "files" for Drive API response
-  });
-
-  // Check if subfolders is defined and iterable
-  if (subfolders.files && subfolders.files.length > 0) {
-    // Loop through all subfolders and call the function recursively
-    for (const subfolder of subfolders.files) {
-      recursiveListSharedFiles(subfolder.id, subfolder.name, data, mode); // Recurse into the subfolder
-    }
-  }
+function auditDriveFiles(options) {
+  manageProgress('clear');
+  
+  const rootFolderId = options.folderId;
+  const mode = options.mode;
+  const emails = options.emails ? options.emails.split(',').map(e => e.trim()) : [];
+  const removePermissions = options.removePermissions === 'true';
+  
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const newSheetName = 'File Audit ' + new Date().toLocaleString();
+  const sheet = spreadsheet.insertSheet(newSheetName);
+  
+  sheet.appendRow(['File/Folder Name', 'Type', 'Full Path', 'Owner', 'Sharing Access', 'Sharing Permission', 'Editors', 'Viewers', 'URL', 'Permissions Removed']);
+  
+  const allItems = getAllItems(rootFolderId);
+  processItems(allItems, sheet, mode, emails, removePermissions);
+  
+  sheet.autoResizeColumns(1, 10);
+  manageProgress('set', 100);
+  
+  return {sheetName: newSheetName};
 }
 
-function listSharedFiles(folderId, folderName, data, mode) {
-  // Get all files in the current folder using the Drive API
-  const files = Drive.Files.list({
-    q: `'${folderId}' in parents and trashed = false`,
-    fields: "files(id, name, permissions)" // Use "files" for the Drive API response
-  });
+function getAllItems(folderId) {
+  const allItems = [];
+  const folderStack = [{id: folderId, path: ''}];
+  const fields = 'nextPageToken, files(id, name, mimeType, owners, permissions, webViewLink, parents)';
+  
+  while (folderStack.length > 0) {
+    const currentFolder = folderStack.pop();
+    let pageToken;
+    
+    do {
+      const response = Drive.Files.list({
+        q: `'${currentFolder.id}' in parents and trashed = false`,
+        fields: fields,
+        pageToken: pageToken,
+        pageSize: 1000
+      });
+      
+      response.files.forEach(file => {
+        const fullPath = currentFolder.path + '/' + file.name;
+        allItems.push({...file, fullPath: fullPath});
+        
+        if (file.mimeType === 'application/vnd.google-apps.folder') {
+          folderStack.push({id: file.id, path: fullPath});
+        }
+      });
+      
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+  }
+  
+  return allItems;
+}
 
-  // Create a temporary array to hold the batch data
-  const batchData = [];
-
-  // Define a list of email addresses for filtering (for modes 2 and 3)
-  const filterEmails = [
-    "your.own@email.com",   // Replace with actual internal emails
-    "pvm345@gmail.com"
-  ];
-
-  // Loop through all files in the folder
-  for (const file of files.files) { // Change "items" to "files"
-    const fileName = file.name; // Use "name" instead of "title"
-    const fileUrl = `https://drive.google.com/open?id=${file.id}`; // Generate the file URL
-
-    // Ensure that the permissions object exists before processing
-    const permissions = file.permissions || [];
-
-    // Determine sharing access and permissions
-    const sharingAccess = permissions.some(p => p.role === 'owner') ? 'Shared' : 'Private';
-    const sharingPermission = permissions.map(p => p.role).join(", ");
-
-    // Get the list of editor and viewer emails
-    const editorEmails = permissions.filter(p => p.role === 'writer').map(p => p.emailAddress || 'N/A').toString();
-    const viewerEmails = permissions.filter(p => p.role === 'reader').map(p => p.emailAddress || 'N/A').toString();
-
-    // Mode 1: Log all files without filtering
-    if (mode === 1) {
-      batchData.push([
-        fileName,             // File name
-        folderName,           // Parent folder name
-        sharingAccess,        // Sharing access level
-        sharingPermission,    // Sharing permission
-        editorEmails,         // List of editor emails
-        viewerEmails,         // List of viewer emails
-        fileUrl               // File URL
-      ]);
-    }
-
-    // Mode 2: Filter for specific emails with editor permission
-    else if (mode === 2 && filterEmails.some(email => editorEmails.includes(email))) {
-      batchData.push([
-        fileName,
-        folderName,
+function processItems(items, sheet, mode, emails, removePermissions) {
+  const batchSize = 100;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const rows = batch.map(item => {
+      const itemType = item.mimeType === 'application/vnd.google-apps.folder' ? 'Folder' : 'File';
+      const owner = item.owners[0].emailAddress;
+      const sharingAccess = item.permissions.length > 1 ? 'Shared' : 'Not Shared';
+      const permissions = item.permissions.map(p => `${p.role}:${p.type}`).join(', ');
+      const editors = item.permissions.filter(p => p.role === 'writer').map(p => p.emailAddress).join(', ');
+      const viewers = item.permissions.filter(p => p.role === 'reader').map(p => p.emailAddress).join(', ');
+      
+      let permissionsRemoved = 'N/A';
+      if (removePermissions && shouldIncludeItem(mode, emails, editors.split(', '), viewers.split(', '), owner)) {
+        permissionsRemoved = removeItemPermissions(item.id, emails);
+      }
+      
+      return [
+        item.name,
+        itemType,
+        item.fullPath,
+        owner,
         sharingAccess,
-        sharingPermission,
-        editorEmails,
-        viewerEmails,
-        fileUrl
-      ]);
-    }
-
-    // Mode 3: Filter for specific emails with viewer permission
-    else if (mode === 3 && filterEmails.some(email => viewerEmails.includes(email))) {
-      batchData.push([
-        fileName,
-        folderName,
-        sharingAccess,
-        sharingPermission,
-        editorEmails,
-        viewerEmails,
-        fileUrl
-      ]);
-    }
-
-    // If we reach 100 files, write the batch to the sheet
-    if (batchData.length === 100) {
-      // Write the batch data to the sheet
-      SpreadsheetApp.getActiveSheet().getRange(
-        SpreadsheetApp.getActiveSheet().getLastRow() + 1,
-        1,
-        batchData.length,
-        batchData[0].length
-      ).setValues(batchData);
-
-      // Clear the batch data for the next set of files
-      batchData.length = 0; // Reset the batch data array
-    }
-  }
-
-  // Write any remaining files in the last batch
-  if (batchData.length > 0) {
-    SpreadsheetApp.getActiveSheet().getRange(
-      SpreadsheetApp.getActiveSheet().getLastRow() + 1,
-      1,
-      batchData.length,
-      batchData[0].length
-    ).setValues(batchData);
+        permissions,
+        editors,
+        viewers,
+        item.webViewLink,
+        permissionsRemoved
+      ];
+    });
+    
+    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    manageProgress('set', Math.round((i + batch.length) / items.length * 100));
   }
 }
 
-// Helper function to get the name of the folder by its ID
-function getFolderName(folderId) {
-  const folder = Drive.Files.get(folderId);
-  return folder.name; // Use "name" instead of "title" to get the folder name
+function shouldIncludeItem(mode, emails, editors, viewers, owner) {
+  switch (mode) {
+    case 'all':
+      return true;
+    case 'editors':
+      return emails.some(email => editors.includes(email));
+    case 'viewers':
+      return emails.some(email => viewers.includes(email));
+    case 'owners':
+      return emails.includes(owner);
+    default:
+      return false;
+  }
+}
+
+function removeItemPermissions(fileId, emailsToRemove) {
+  let removedCount = 0;
+  
+  emailsToRemove.forEach(email => {
+    try {
+      Drive.Permissions.delete(fileId, email);
+      removedCount++;
+    } catch (error) {
+      // Permission not found or unable to remove, continue to next email
+    }
+  });
+  
+  return removedCount > 0 ? `Removed ${removedCount} permission(s)` : 'No permissions removed';
 }
