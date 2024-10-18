@@ -263,7 +263,83 @@ function processNextBatch(options, pageToken, folderStack) {
   return { nextPageToken: response.nextPageToken, folderStack: folderStack };
 }
 
-// The rest of the functions (shouldIncludeItem, removePermissionsBatch, getOrCreateAuditSheet, appendItemsToSheet) remain the same
+
+function shouldIncludeItem(filterOptions, emails, item) {
+  if (emails.length === 0) return true;
+
+  const permissions = item.permissions || [];
+  const owner = item.owners && item.owners.length > 0 ? item.owners[0].emailAddress : '';
+  
+  return (filterOptions.owners && emails.includes(owner)) ||
+         (filterOptions.editors && permissions.some(p => p.role === 'writer' && emails.includes(p.emailAddress))) ||
+         (filterOptions.commenters && permissions.some(p => p.role === 'commenter' && emails.includes(p.emailAddress))) ||
+         (filterOptions.viewers && permissions.some(p => p.role === 'reader' && emails.includes(p.emailAddress)));
+}
+
+function removePermissionsBatch(items, emailsToRemove) {
+  const batchSize = 50; // Adjust this number based on your needs and API quotas
+  let removedCount = 0;
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    
+    batch.forEach(item => {
+      emailsToRemove.forEach(email => {
+        const permission = item.permissions.find(p => p.emailAddress === email);
+        if (permission) {
+          try {
+            Drive.Permissions.remove(item.id, permission.id);
+            removedCount++;
+          } catch (error) {
+            console.error(`Error removing permission for ${email} on file ${item.id}: ${error}`);
+          }
+        }
+      });
+    });
+    
+    // Add a small delay between batches to avoid hitting API limits
+    Utilities.sleep(1000);
+  }
+
+  return removedCount;
+}
+
+function getOrCreateAuditSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('File Audit Results');
+  if (!sheet) {
+    sheet = ss.insertSheet('File Audit Results');
+    sheet.appendRow(['File/Folder Name', 'Type', 'Owner', 'Sharing Access', 'Editors', 'Commenters', 'Viewers', 'URL']);
+  }
+  return sheet;
+}
+
+function appendItemsToSheet(sheet, items) {
+  const rows = items.map(item => [
+    item.name,
+    item.mimeType === 'application/vnd.google-apps.folder' ? 'Folder' : 'File',
+    item.owners[0].emailAddress,
+    item.permissions.length > 1 ? 'Shared' : 'Not Shared',
+    item.permissions.filter(p => p.role === 'writer').map(p => p.emailAddress).join(', '),
+    item.permissions.filter(p => p.role === 'commenter').map(p => p.emailAddress).join(', '),
+    item.permissions.filter(p => p.role === 'reader').map(p => p.emailAddress).join(', '),
+    item.webViewLink
+  ]);
+  
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+function updateProgress(nextPageToken) {
+  const props = PropertiesService.getScriptProperties();
+  const currentProgress = Number(props.getProperty('auditProgress') || 0);
+  const newProgress = nextPageToken ? Math.min(currentProgress + 10, 90) : 100;  // Increment by 10% each batch, max 90% until complete
+  props.setProperty('auditProgress', newProgress.toString());
+}
+
+function getAuditProgress() {
+  const props = PropertiesService.getScriptProperties();
+  return Number(props.getProperty('auditProgress') || 0);
+}
 
 function updateProgress(nextPageToken, folderStack) {
   const props = PropertiesService.getScriptProperties();
