@@ -163,6 +163,10 @@ function showAuditDialog() {
 
 function startAudit(options) {
   const props = PropertiesService.getScriptProperties();
+  
+  // Parse emails into an array
+  options.emails = options.emails ? options.emails.split(',').map(e => e.trim()) : [];
+  
   props.setProperty('auditOptions', JSON.stringify(options));
   props.setProperty('auditProgress', '0');
   props.deleteProperty('pageToken');
@@ -222,7 +226,7 @@ function processNextBatch(options, pageToken) {
     const sheet = getOrCreateAuditSheet();
     appendItemsToSheet(sheet, filteredItems);
     
-    if (removePermissions === 'true') {
+    if (removePermissions === 'true' && emails.length > 0) {
       const removedCount = removePermissionsBatch(filteredItems, emails);
       Logger.log(`Removed ${removedCount} permissions in this batch.`);
     }
