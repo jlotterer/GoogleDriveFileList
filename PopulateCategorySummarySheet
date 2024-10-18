@@ -1,0 +1,36 @@
+//Select range then run script
+
+function populateRangeWithDynamicFormula() {
+  var spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = spreadsheet.getActiveSheet();
+  var selectedRange = sheet.getActiveRange();
+  
+  var startRow = selectedRange.getRow();
+  var startCol = selectedRange.getColumn();
+  var numRows = selectedRange.getNumRows();
+  var numCols = selectedRange.getNumColumns();
+  
+  for (var i = 0; i < numRows; i++) {
+    for (var j = 0; j < numCols; j++) {
+      var currentRow = startRow + i;
+      var currentCol = startCol + j;
+      var colLetter = columnToLetter(currentCol);
+      
+      var formula = 'if(regexmatch(INDIRECT($A$1&" "&$A' + currentRow + '&"!$B$2"),' + colLetter + '$' + startRow + '),"X","")';
+      
+      selectedRange.getCell(i+1, j+1).setFormula(formula);
+    }
+  }
+  
+  SpreadsheetApp.getUi().alert('Selected range has been populated with the dynamic formula.');
+}
+
+function columnToLetter(column) {
+  var temp, letter = '';
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
+}
