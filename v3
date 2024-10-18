@@ -1,0 +1,166 @@
+// File: Code.gs
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('File Audit')
+    .addItem('Run File Audit', 'showAuditDialog')
+    .addToUi();
+}
+
+function showAuditDialog() {
+  const html = HtmlService.createHtmlOutput(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <base target="_top">
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+        <script>
+          function runAudit() {
+            const form = document.getElementById('auditForm');
+            const formData = new FormData(form);
+            document.getElementById('progressBar').style.display = 'block';
+            google.script.run
+              .withSuccessHandler(function(result) {
+                M.toast({html: 'Audit complete! New tab created: ' + result.sheetName});
+              })
+              .withFailureHandler(function(error) {
+                M.toast({html: 'Error: ' + error.message, classes: 'red'});
+              })
+              .withUserObject(form)
+              .auditDriveFiles(Object.fromEntries(formData));
+          }
+
+          function updateProgressBar(percent) {
+            const fill = document.getElementById('progressBarFill');
+            fill.style.width = percent + '%';
+            fill.innerHTML = percent + '%';
+          }
+
+          setInterval(function() {
+            google.script.run.withSuccessHandler(updateProgressBar).manageProgress('get');
+          }, 1000);
+        </script>
+      </head>
+      <body>
+        <div class="container">
+          
+          <form id="auditForm" class="col s12">
+            <div class="input-field">
+              <input type="text" id="folderId" name="folderId" required>
+              <label for="folderId">Root Folder ID</label>
+            </div>
+            <p>Audit Mode:</p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="all" checked/>
+                <span>List all files</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="editors"/>
+                <span>Filter for specific editors</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="viewers"/>
+                <span>Filter for specific viewers</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="mode" type="radio" value="owners"/>
+                <span>Filter for specific owners</span>
+              </label>
+            </p>
+            <div class="input-field">
+              <textarea name="emails" class="materialize-textarea" rows="3" cols="40"></textarea>
+              <label>Email addresses (comma-separated, for filtering)</label>
+            </div>
+            <p>
+              <label>
+                <input type="checkbox" name="removePermissions" value="true"/>
+                <span>Remove permissions for listed emails</span>
+              </label>
+            </p>
+            <div class="center-align">
+              <a class="waves-effect waves-light btn" onclick="runAudit()">Run Audit</a>
+            </div>
+          </form>
+          <div id="progressBar" class="progress" style="display:none;">
+            <div id="progressBarFill" class="determinate" style="width: 0%;">0%</div>
+          </div>
+        </div>
+      </body>
+    </html>
+  `).setWidth(400).setHeight(600);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'File Options');
+}
+
+
+function manageFilesAndFolders() {
+  var ui = SpreadsheetApp.getUi(); // Same variations.
+  
+  var result = ui.prompt(
+      'Please enter your details',
+      'Enter the email address:',
+      ui.ButtonSet.OK_CANCEL);
+  
+  // Process user's input.
+  var button = result.getSelectedButton();
+  var text = result.getResponseText();
+  if (button == ui.Button.OK) {
+    // User clicked "OK".
+    Logger.log('User entered: %s', text);
+    
+    // Access the folder and iterate over its files and folders.
+    var rootFolder = DriveApp.getRootFolder();
+    processFolders(rootFolder, text);
+  } else if (button == ui.Button.CANCEL) {
+    // User clicked "Cancel".
+    Logger.log('User clicked cancel');
+  } else if (button == ui.Button.CLOSE) {
+    // User closed the dialog.
+    Logger.log('User dismissed the dialog');
+  }
+}
+
+function processFolders(folder, email) {
+  var contents = folder.getFiles();
+  
+  while (contents.hasNext()) {
+    var file = contents.next();
+    
+    // Check if user has view or edit permissions
+    var acl = file.getAccessControlList();
+    for(var i = 0; i < acl.length; i++) {
+      var permission = acl[i];
+      
+      if (permission.canEdit && permission.emailAddress == email || permission.role == "owner") {
+        Logger.log('File: ' + file.getName());
+        
+        // Check if remove permissions checkbox is checked
+        var htmlOutput = HtmlService.createHtmlOutput("<input type='checkbox' id='removeCheckbox'>Remove Permissions</input>")
+                            .setWidth(10)
+                            .setHeight(10);
+        ui.showModalDialog(htmlOutput, 'Options'); 
+        
+        var removeCheckbox = document.getElementById('removeCheckbox').checked;
+        if (removeCheckbox) {
+          file.removeEditor(email);
+        }
+      }
+    }
+  }
+  
+  // Process subfolders recursively.
+  var folders = folder.getFolders();
+  while (folders.hasNext()) {
+    var childFolder = folders.next();
+    processFolders(childFolder, email);
+  }
+}
