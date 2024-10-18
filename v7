@@ -329,18 +329,6 @@ function appendItemsToSheet(sheet, items) {
   sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
 }
 
-function updateProgress(nextPageToken) {
-  const props = PropertiesService.getScriptProperties();
-  const currentProgress = Number(props.getProperty('auditProgress') || 0);
-  const newProgress = nextPageToken ? Math.min(currentProgress + 10, 90) : 100;  // Increment by 10% each batch, max 90% until complete
-  props.setProperty('auditProgress', newProgress.toString());
-}
-
-function getAuditProgress() {
-  const props = PropertiesService.getScriptProperties();
-  return Number(props.getProperty('auditProgress') || 0);
-}
-
 function updateProgress(nextPageToken, folderStack) {
   const props = PropertiesService.getScriptProperties();
   const currentProgress = Number(props.getProperty('auditProgress') || 0);
