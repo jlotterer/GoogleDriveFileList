@@ -1,12 +1,5 @@
 // File: Code.gs
 
-function onOpen() {
-  SpreadsheetApp.getUi()
-    .createMenu('File Audit')
-    .addItem('Run File Audit', 'showAuditDialog')
-    .addToUi();
-}
-
 function showAuditDialog() {
   const html = HtmlService.createHtmlOutput(`
     <!DOCTYPE html>
@@ -45,35 +38,53 @@ function showAuditDialog() {
       </head>
       <body>
         <div class="container">
-          
           <form id="auditForm" class="col s12">
             <div class="input-field">
-              <input type="text" id="folderId" name="folderId" required>
+              <input type="text" id="folderId" name="folderId" placeholder="1SQKoQSnqmrdzjGXFISDjCJg2Sbg2GYga" required>
               <label for="folderId">Root Folder ID</label>
             </div>
-            <p>Audit Mode:</p>
+            <p>Item Type:</p>
             <p>
               <label>
-                <input name="mode" type="radio" value="all" checked/>
-                <span>List all files</span>
+                <input name="itemType" type="radio" value="all" checked/>
+                <span>Both Files and Folders</span>
               </label>
             </p>
             <p>
               <label>
-                <input name="mode" type="radio" value="editors"/>
-                <span>Filter for specific editors</span>
+                <input name="itemType" type="radio" value="files"/>
+                <span>Files Only</span>
               </label>
             </p>
             <p>
               <label>
-                <input name="mode" type="radio" value="viewers"/>
-                <span>Filter for specific viewers</span>
+                <input name="itemType" type="radio" value="folders"/>
+                <span>Folders Only</span>
+              </label>
+            </p>
+            <p>Filter By:</p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterOwners" value="true"/>
+                <span>Owners</span>
               </label>
             </p>
             <p>
               <label>
-                <input name="mode" type="radio" value="owners"/>
-                <span>Filter for specific owners</span>
+                <input type="checkbox" name="filterEditors" value="true"/>
+                <span>Editors</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterCommenters" value="true"/>
+                <span>Commenters</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterViewers" value="true"/>
+                <span>Viewers</span>
               </label>
             </p>
             <div class="input-field">
@@ -96,71 +107,131 @@ function showAuditDialog() {
         </div>
       </body>
     </html>
-  `).setWidth(400).setHeight(600);
+  `).setWidth(400).setHeight(700);
   
-  SpreadsheetApp.getUi().showModalDialog(html, 'File Options');
+  SpreadsheetApp.getUi().showModalDialog(html, 'File Audit Options');
 }
 
-
-function manageFilesAndFolders() {
-  var ui = SpreadsheetApp.getUi(); // Same variations.
+function auditDriveFiles(options) {
+  manageProgress('clear');
   
-  var result = ui.prompt(
-      'Please enter your details',
-      'Enter the email address:',
-      ui.ButtonSet.OK_CANCEL);
+  const rootFolderId = options.folderId;
+  const itemType = options.itemType;
+  const emails = options.emails ? options.emails.split(',').map(e => e.trim()) : [];
+  const removePermissions = options.removePermissions === 'true';
+  const filterOptions = {
+    owners: options.filterOwners === 'true',
+    editors: options.filterEditors === 'true',
+    commenters: options.filterCommenters === 'true',
+    viewers: options.filterViewers === 'true'
+  };
   
-  // Process user's input.
-  var button = result.getSelectedButton();
-  var text = result.getResponseText();
-  if (button == ui.Button.OK) {
-    // User clicked "OK".
-    Logger.log('User entered: %s', text);
-    
-    // Access the folder and iterate over its files and folders.
-    var rootFolder = DriveApp.getRootFolder();
-    processFolders(rootFolder, text);
-  } else if (button == ui.Button.CANCEL) {
-    // User clicked "Cancel".
-    Logger.log('User clicked cancel');
-  } else if (button == ui.Button.CLOSE) {
-    // User closed the dialog.
-    Logger.log('User dismissed the dialog');
-  }
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const newSheetName = 'File Audit ' + new Date().toLocaleString();
+  const sheet = spreadsheet.insertSheet(newSheetName);
+  
+  sheet.appendRow(['File/Folder Name', 'Type', 'Full Path', 'Owner', 'Sharing Access', 'Sharing Permission', 'Editors', 'Commenters', 'Viewers', 'URL', 'Permissions Removed']);
+  
+  const allItems = getAllItems(rootFolderId, itemType);
+  processItems(allItems, sheet, filterOptions, emails, removePermissions);
+  
+  sheet.autoResizeColumns(1, 11);
+  manageProgress('set', 100);
+  
+  return {sheetName: newSheetName};
 }
 
-function processFolders(folder, email) {
-  var contents = folder.getFiles();
+function getAllItems(folderId, itemType) {
+  const allItems = [];
+  const folderStack = [{id: folderId, path: ''}];
+  const fields = 'nextPageToken, files(id, name, mimeType, owners, permissions, webViewLink, parents)';
   
-  while (contents.hasNext()) {
-    var file = contents.next();
+  while (folderStack.length > 0) {
+    const currentFolder = folderStack.pop();
+    let pageToken;
     
-    // Check if user has view or edit permissions
-    var acl = file.getAccessControlList();
-    for(var i = 0; i < acl.length; i++) {
-      var permission = acl[i];
+    do {
+      const response = Drive.Files.list({
+        q: `'${currentFolder.id}' in parents and trashed = false`,
+        fields: fields,
+        pageToken: pageToken,
+        pageSize: 1000
+      });
       
-      if (permission.canEdit && permission.emailAddress == email || permission.role == "owner") {
-        Logger.log('File: ' + file.getName());
+      response.files.forEach(file => {
+        const fullPath = currentFolder.path + '/' + file.name;
+        const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
         
-        // Check if remove permissions checkbox is checked
-        var htmlOutput = HtmlService.createHtmlOutput("<input type='checkbox' id='removeCheckbox'>Remove Permissions</input>")
-                            .setWidth(10)
-                            .setHeight(10);
-        ui.showModalDialog(htmlOutput, 'Options'); 
-        
-        var removeCheckbox = document.getElementById('removeCheckbox').checked;
-        if (removeCheckbox) {
-          file.removeEditor(email);
+        if ((itemType === 'all') || 
+            (itemType === 'files' && !isFolder) || 
+            (itemType === 'folders' && isFolder)) {
+          allItems.push({...file, fullPath: fullPath});
         }
-      }
-    }
+        
+        if (isFolder) {
+          folderStack.push({id: file.id, path: fullPath});
+        }
+      });
+      
+      pageToken = response.nextPageToken;
+    } while (pageToken);
   }
   
-  // Process subfolders recursively.
-  var folders = folder.getFolders();
-  while (folders.hasNext()) {
-    var childFolder = folders.next();
-    processFolders(childFolder, email);
+  return allItems;
+}
+
+function processItems(items, sheet, filterOptions, emails, removePermissions) {
+  const batchSize = 100;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const rows = batch.filter(item => shouldIncludeItem(filterOptions, emails, item))
+      .map(item => {
+        const itemType = item.mimeType === 'application/vnd.google-apps.folder' ? 'Folder' : 'File';
+        const owner = item.owners && item.owners.length > 0 ? item.owners[0].emailAddress : 'Unknown';
+        const permissions = item.permissions || [];
+        const sharingAccess = permissions.length > 1 ? 'Shared' : 'Not Shared';
+        const permissionsString = permissions.map(p => `${p.role}:${p.type}`).join(', ');
+        const editors = permissions.filter(p => p.role === 'writer').map(p => p.emailAddress).join(', ');
+        const commenters = permissions.filter(p => p.role === 'commenter').map(p => p.emailAddress).join(', ');
+        const viewers = permissions.filter(p => p.role === 'reader').map(p => p.emailAddress).join(', ');
+        
+        let permissionsRemoved = 'N/A';
+        if (removePermissions) {
+          permissionsRemoved = removeItemPermissions(item.id, emails, permissions);
+        }
+        
+        return [
+          item.name || 'Unnamed',
+          itemType,
+          item.fullPath || 'Unknown',
+          owner,
+          sharingAccess,
+          permissionsString,
+          editors,
+          commenters,
+          viewers,
+          item.webViewLink || 'No link available',
+          permissionsRemoved
+        ];
+      });
+    
+    if (rows.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    }
+    manageProgress('set', Math.round((i + batch.length) / items.length * 100));
   }
 }
+
+function shouldIncludeItem(filterOptions, emails, item) {
+  if (emails.length === 0) return true;
+
+  const permissions = item.permissions || [];
+  const owner = item.owners && item.owners.length > 0 ? item.owners[0].emailAddress : '';
+  
+  return (filterOptions.owners && emails.includes(owner)) ||
+         (filterOptions.editors && permissions.some(p => p.role === 'writer' && emails.includes(p.emailAddress))) ||
+         (filterOptions.commenters && permissions.some(p => p.role === 'commenter' && emails.includes(p.emailAddress))) ||
+         (filterOptions.viewers && permissions.some(p => p.role === 'reader' && emails.includes(p.emailAddress)));
+}
+
+// The removeItemPermissions function remains the same
