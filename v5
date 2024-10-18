@@ -1,0 +1,329 @@
+// File: Code.gs
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('File Audit')
+    .addItem('Run File Audit', 'showAuditDialog')
+    .addToUi();
+}
+
+function showAuditDialog() {
+  const html = HtmlService.createHtmlOutput(`
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <base target="_top">
+        <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/css/materialize.min.css" rel="stylesheet">
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/1.0.0/js/materialize.min.js"></script>
+        <style>
+          .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            display: none;
+            margin: 10px auto;
+          }
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+        </style>
+        <script>
+          function runAudit() {
+            const form = document.getElementById('auditForm');
+            const formData = new FormData(form);
+            document.getElementById('spinner').style.display = 'block';
+            document.getElementById('runAuditBtn').disabled = true;
+            document.getElementById('closeBtn').disabled = true;
+            document.getElementById('progressBar').style.display = 'block';
+            document.getElementById('message').innerHTML = '';
+            google.script.run
+              .withSuccessHandler(function(result) {
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('runAuditBtn').disabled = false;
+                document.getElementById('closeBtn').disabled = false;
+                document.getElementById('message').innerHTML = 'Audit complete! New tab created: ' + result.sheetName;
+                document.getElementById('message').style.color = 'green';
+              })
+              .withFailureHandler(function(error) {
+                document.getElementById('spinner').style.display = 'none';
+                document.getElementById('runAuditBtn').disabled = false;
+                document.getElementById('closeBtn').disabled = false;
+                document.getElementById('message').innerHTML = 'Error: ' + error.message;
+                document.getElementById('message').style.color = 'red';
+              })
+              .withUserObject(form)
+              .auditDriveFiles(Object.fromEntries(formData));
+          }
+
+          function closeDialog() {
+            google.script.host.close();
+          }
+
+          function updateProgressBar(percent) {
+            const fill = document.getElementById('progressBarFill');
+            fill.style.width = percent + '%';
+            fill.innerHTML = percent + '%';
+          }
+
+          setInterval(function() {
+            google.script.run.withSuccessHandler(updateProgressBar).manageProgress('get');
+          }, 1000);
+        </script>
+      </head>
+      <body>
+        <div class="container">
+          <form id="auditForm" class="col s12">
+            <div class="input-field">
+              <input type="text" id="folderId" name="folderId" placeholder="1SQKoQSnqmrdzjGXFISDjCJg2Sbg2GYga" required>
+              <label for="folderId">Root Folder ID</label>
+            </div>
+            <p>Item Type:</p>
+            <p>
+              <label>
+                <input name="itemType" type="radio" value="all" checked/>
+                <span>Both Files and Folders</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="itemType" type="radio" value="files"/>
+                <span>Files Only</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input name="itemType" type="radio" value="folders"/>
+                <span>Folders Only</span>
+              </label>
+            </p>
+            <p>Filter By:</p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterOwners" value="true"/>
+                <span>Owners</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterEditors" value="true"/>
+                <span>Editors</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterCommenters" value="true"/>
+                <span>Commenters</span>
+              </label>
+            </p>
+            <p>
+              <label>
+                <input type="checkbox" name="filterViewers" value="true"/>
+                <span>Viewers</span>
+              </label>
+            </p>
+            <div class="input-field">
+              <textarea name="emails" class="materialize-textarea" rows="3" cols="40"></textarea>
+              <label>Email addresses (comma-separated, for filtering)</label>
+            </div>
+            <p>
+              <label>
+                <input type="checkbox" name="removePermissions" value="true"/>
+                <span>Remove permissions for listed emails</span>
+              </label>
+            </p>
+            <div class="center-align">
+              <a id="runAuditBtn" class="waves-effect waves-light btn" onclick="runAudit()">Run Audit</a>
+              <a id="closeBtn" class="waves-effect waves-light btn" onclick="closeDialog()">Close</a>
+            </div>
+          </form>
+          <div id="spinner" class="spinner"></div>
+          <div id="progressBar" class="progress" style="display:none;">
+            <div id="progressBarFill" class="determinate" style="width: 0%;">0%</div>
+          </div>
+          <div id="message" style="margin-top: 10px; text-align: center;"></div>
+        </div>
+      </body>
+    </html>
+  `).setWidth(400).setHeight(700);
+  
+  SpreadsheetApp.getUi().showModalDialog(html, 'File Audit Options');
+}
+
+function manageProgress(action, value) {
+  const props = PropertiesService.getScriptProperties();
+  if (action === 'get') {
+    return Number(props.getProperty('auditProgress') || 0);
+  } else if (action === 'set') {
+    props.setProperty('auditProgress', value.toString());
+  } else if (action === 'clear') {
+    props.deleteProperty('auditProgress');
+  }
+}
+
+function auditDriveFiles(options) {
+  manageProgress('clear');
+  
+  const rootFolderId = options.folderId;
+  const itemType = options.itemType;
+  const emails = options.emails ? options.emails.split(',').map(e => e.trim()) : [];
+  const removePermissions = options.removePermissions === 'true';
+  const filterOptions = {
+    owners: options.filterOwners === 'true',
+    editors: options.filterEditors === 'true',
+    commenters: options.filterCommenters === 'true',
+    viewers: options.filterViewers === 'true'
+  };
+  
+  const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+  const newSheetName = 'File Audit ' + new Date().toLocaleString();
+  const sheet = spreadsheet.insertSheet(newSheetName);
+  
+  sheet.appendRow(['File/Folder Name', 'Type', 'Full Path', 'Owner', 'Sharing Access', 'Sharing Permission', 'Editors', 'Commenters', 'Viewers', 'URL', 'Permissions Removed']);
+  
+  const allItems = getAllItems(rootFolderId, itemType);
+  processItems(allItems, sheet, filterOptions, emails, removePermissions);
+  
+  sheet.autoResizeColumns(1, 11);
+  manageProgress('set', 100);
+  
+  return {sheetName: newSheetName};
+}
+
+function getAllItems(folderId, itemType) {
+  const allItems = [];
+  const folderStack = [{id: folderId, path: ''}];
+  const fields = 'nextPageToken, files(id, name, mimeType, owners, permissions, webViewLink, parents)';
+  
+  while (folderStack.length > 0) {
+    const currentFolder = folderStack.pop();
+    let pageToken;
+    
+    do {
+      const response = Drive.Files.list({
+        q: `'${currentFolder.id}' in parents and trashed = false`,
+        fields: fields,
+        pageToken: pageToken,
+        pageSize: 1000
+      });
+      
+      response.files.forEach(file => {
+        const fullPath = currentFolder.path + '/' + file.name;
+        const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
+        
+        if ((itemType === 'all') || 
+            (itemType === 'files' && !isFolder) || 
+            (itemType === 'folders' && isFolder)) {
+          allItems.push({...file, fullPath: fullPath});
+        }
+        
+        if (isFolder) {
+          folderStack.push({id: file.id, path: fullPath});
+        }
+      });
+      
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+  }
+  
+  return allItems;
+}
+
+function processItems(items, sheet, filterOptions, emails, removePermissions) {
+  const batchSize = 100;
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const rows = batch.filter(item => shouldIncludeItem(filterOptions, emails, item))
+      .map(item => {
+        const itemType = item.mimeType === 'application/vnd.google-apps.folder' ? 'Folder' : 'File';
+        const owner = item.owners && item.owners.length > 0 ? item.owners[0].emailAddress : 'Unknown';
+        const permissions = item.permissions || [];
+        const sharingAccess = permissions.length > 1 ? 'Shared' : 'Not Shared';
+        const permissionsString = permissions.map(p => `${p.role}:${p.type}`).join(', ');
+        const editors = permissions.filter(p => p.role === 'writer').map(p => p.emailAddress).join(', ');
+        const commenters = permissions.filter(p => p.role === 'commenter').map(p => p.emailAddress).join(', ');
+        const viewers = permissions.filter(p => p.role === 'reader').map(p => p.emailAddress).join(', ');
+        
+        let permissionsRemoved = 'N/A';
+        if (removePermissions) {
+          permissionsRemoved = removeItemPermissions(item.id, emails, permissions);
+        }
+        
+        return [
+          item.name || 'Unnamed',
+          itemType,
+          item.fullPath || 'Unknown',
+          owner,
+          sharingAccess,
+          permissionsString,
+          editors,
+          commenters,
+          viewers,
+          item.webViewLink || 'No link available',
+          permissionsRemoved
+        ];
+      });
+    
+    if (rows.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    }
+    manageProgress('set', Math.round((i + batch.length) / items.length * 100));
+  }
+}
+
+function shouldIncludeItem(filterOptions, emails, item) {
+  if (emails.length === 0) return true;
+
+  const permissions = item.permissions || [];
+  const owner = item.owners && item.owners.length > 0 ? item.owners[0].emailAddress : '';
+  
+  return (filterOptions.owners && emails.includes(owner)) ||
+         (filterOptions.editors && permissions.some(p => p.role === 'writer' && emails.includes(p.emailAddress))) ||
+         (filterOptions.commenters && permissions.some(p => p.role === 'commenter' && emails.includes(p.emailAddress))) ||
+         (filterOptions.viewers && permissions.some(p => p.role === 'reader' && emails.includes(p.emailAddress)));
+}
+
+function removeItemPermissions(fileId, emailsToRemove, permissions) {
+  let removedCount = 0;
+  
+  emailsToRemove.forEach(email => {
+    const permission = permissions.find(p => p.emailAddress === email);
+    if (permission) {
+      try {
+        Drive.Permissions.remove(fileId, permission.id);
+        removedCount++;
+      } catch (error) {
+        console.error(`Error removing permission for ${email}: ${error}`);
+      }
+    }
+  });
+  
+  return removedCount > 0 ? `Removed ${removedCount} permission(s)` : 'No permissions removed';
+}
+
+
+
+//Codestral 22b
+function deleteTabs() {
+  var spreadsheet = SpreadsheetApp.getActive();
+  var sheets = spreadsheet.getSheets();
+  let count = 0;
+
+  // Loop over all sheets in the spreadsheet
+  for (var i = 0; i < sheets.length; i++) {
+    var sheet = sheets[i];
+
+    // Check if the name of the sheet starts with "File Audit"
+    if(sheet.getName().indexOf("File Audit") === 0) {
+      // If it does, delete the sheet
+      spreadsheet.deleteSheet(sheet);
+      // Increment the counter by 1
+      count++;
+    }
+  }
+  console.log('Closed Tabs:', count); // Output: 1
+}
