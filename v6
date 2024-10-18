@@ -223,7 +223,8 @@ function processNextBatch(options, pageToken) {
     appendItemsToSheet(sheet, filteredItems);
     
     if (removePermissions === 'true') {
-      removePermissionsBatch(filteredItems, emails);
+      const removedCount = removePermissionsBatch(filteredItems, emails);
+      Logger.log(`Removed ${removedCount} permissions in this batch.`);
     }
   }
   
@@ -245,21 +246,31 @@ function shouldIncludeItem(filterOptions, emails, item) {
 }
 
 function removePermissionsBatch(items, emailsToRemove) {
-  const batch = Drive.newBatch();
-  
-  items.forEach(item => {
-    emailsToRemove.forEach(email => {
-      const permission = item.permissions.find(p => p.emailAddress === email);
-      if (permission) {
-        batch.add(Drive.Permissions.remove({
-          fileId: item.id,
-          permissionId: permission.id
-        }));
-      }
+  const batchSize = 50; // Adjust this number based on your needs and API quotas
+  let removedCount = 0;
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    
+    batch.forEach(item => {
+      emailsToRemove.forEach(email => {
+        const permission = item.permissions.find(p => p.emailAddress === email);
+        if (permission) {
+          try {
+            Drive.Permissions.remove(item.id, permission.id);
+            removedCount++;
+          } catch (error) {
+            console.error(`Error removing permission for ${email} on file ${item.id}: ${error}`);
+          }
+        }
+      });
     });
-  });
-  
-  batch.execute();
+    
+    // Add a small delay between batches to avoid hitting API limits
+    Utilities.sleep(1000);
+  }
+
+  return removedCount;
 }
 
 function getOrCreateAuditSheet() {
